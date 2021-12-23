@@ -1,3 +1,4 @@
+from functools import total_ordering
 from sympy import *
 from sympy.core.evalf import dps_to_prec
 from mpmath import workprec, mpf, mp, mpi
@@ -223,21 +224,93 @@ def interval_newton(poly, polydiff, X1):
     return X2, status
 
 
-class Infinity:
+class Infinite:
+
+    def mul_q(self, other):
+        if other == 0:
+            raise ValueError('0 * oo')
+        elif other > 0:
+            return self
+        else:
+            return -self
 
     def __add__(self, other):
         if QQ.of_type(other):
             return self
+        else:
+            return NotImplemented
+
+    def __mul__(self, other):
+        if QQ.of_type(other):
+            return self.mul_q(other)
+        else:
+            return NotImplemented
+
+    def __rmul__(self, other):
+        if QQ.of_type(other):
+            return self.mul_q(other)
+        else:
+            return NotImplemented
+
+
+@total_ordering
+class Infinity(Infinite):
+
+    def __repr__(self):
+        return 'inf'
+
+    def __eq__(self, other):
+        if isinstance(other, Infinity):
+            return True
+        else:
+            return NotImplemented
+
+    def __neg__(self):
+        return neginf
+
+    def __gt__(self, other):
+        if isinstance(other, Infinity):
+            return False
+        elif QQ.of_type(other):
+            return True
+        else:
+            return NotImplemented
+
+
+@total_ordering
+class NegativeInfinity(Infinite):
+
+    def __repr__(self):
+        return '-inf'
+
+    def __eq__(self, other):
+        if isinstance(other, NegativeInfinity):
+            return True
+        else:
+            return NotImplemented
+
+    def __neg__(self):
+        return inf
+
+    def __lt__(self, other):
+        if isinstance(other, Infinity):
+            return False
+        elif QQ.of_type(other):
+            return True
+        else:
+            return NotImplemented
+
 
 
 inf = Infinity()
+neginf = NegativeInfinity()
 
 
 class RationalInterval:
 
     def __init__(self, a, b):
-        if not QQ.of_type(a) and QQ.of_type(b):
-            raise TypeError('QQ expected')
+        if not self._is_valid(a) and self._is_valid(b):
+            raise TypeError('QQ or infinite expected')
         if not a <= b:
             raise ValueError('start and end out of order')
         self.a = a
@@ -248,6 +321,9 @@ class RationalInterval:
 
     def _new(self, a, b):
         return RationalInterval(a, b)
+
+    def _is_valid(self, value):
+        return QQ.of_type(value) or isinstance(value, Infinite)
 
     @property
     def mid(self):
@@ -287,16 +363,24 @@ class RationalInterval:
     def mul(self, other):
         a1, a2 = self.a, other.a
         b1, b2 = self.b, other.b
-        products = [a1*b1, a1*b2, a2*b1, a2*b2]
+        products = [a1*a2, a1*b2, b1*a2, b1*b2]
         a = min(products)
         b = max(products)
         return self._new(a, b)
 
     def mul_scalar(self, other):
-        if other >= 0:
+        if other > 0:
             return self._new(other*self.a, other*self.b)
-        else:
+        elif other < 0:
             return self._new(other*self.b, other*self.a)
+        elif self.a == neginf and self.b == inf:
+            return self._new(neginf, inf)
+        elif self.a == neginf:
+            return self._new(neginf, QQ.zero)
+        elif self.b == inf:
+            return self._new(QQ.zero, inf)
+        else:
+            return self._new(QQ.zero, QQ.zero)
 
     def add_scalar(self, other):
         return self._new(self.a + other, self.b + other)
@@ -322,6 +406,9 @@ class RationalInterval:
 
     def div_rscalar(self, other):
         return self.invert().mul_scalar(other)
+
+    def contains(self, other):
+        return self.a < other < self.b
 
     def __add__(self, other):
         if QQ.of_type(other):
@@ -376,23 +463,44 @@ class RationalInterval:
         else:
             return NotImplemented
 
+    def __contains__(self, element):
+        if QQ.of_type(element):
+            return self.contains(element)
+        return NotImplemented
+
 
 def interval_newton_rat_1step(poly, polydiff, X1):
     x1 = X1.mid
     f = horner(poly, x1)
     Fp = horner(polydiff, X1)
-    Z2 = x1 - f/Fp
-    X2 = Z2.intersect(X1)
 
-    if X2 is None:
-        status = 'empty'
-    elif Z2.is_proper_subset(X1):
-        status = 'unique'
-    elif X2 == X1:
-        status = 'stalled'
+    if QQ.zero not in Fp:
+        Z2 = x1 - f/Fp
+        X2 = Z2.intersect(X1)
+
+        if X2 is None:
+            Xs = []
+            status = 'empty'
+        else:
+            Xs = [X2]
+            if Z2.is_proper_subset(X1):
+                status = 'unique'
+            elif X2 == X1:
+                status = 'stalled'
+            else:
+                status = 'iterate'
+
     else:
-        status = 'iterate'
-    return X2, status
+        # The derivative is possibly zero in X1. We split the Fp into a
+        # positive interval and a negative interval and proceed with each
+        # separately.
+        Fp1, Fp2 = Fp.split_zero()
+        X21 = (x1 - f/Fp1).intersect(X1)
+        X22 = (x1 - f/Fp2).intersect(X1)
+        Xs = [Xi for Xi in [X21, X22] if Xi is not None]
+        status = 'split'
+
+    return Xs, status
 
 
 def interval_newton_rat(poly, polydiff, X, prec=53):
@@ -400,19 +508,38 @@ def interval_newton_rat(poly, polydiff, X, prec=53):
     X = RationalInterval(QQ(a), QQ(b))
     # Iterate over the queue as it extends:
     queue = [X]
-    for Xi in queue:
-        Xj, status = interval_newton_rat_1step(poly, polydiff, Xi)
-        a, b = Xj.a, Xj.b
-        if abs(a - b) < (abs(a)+abs(b)) / 2**prec and status == 'unique':
-            return Xj.mid
-        print(Xj.n())
-        queue.append(Xj)
+    roots = []
+    while queue:
+        nextqueue = []
+        for Xi in queue:
+            print(Xi.n())
+            Xs, status = interval_newton_rat_1step(poly, polydiff, Xi)
+            if status == 'unique':
+                [Xj] = Xs
+                a, b = Xj.a, Xj.b
+                roots.append(Xj)
+                continue
+                if abs(a - b) < (abs(a)+abs(b)) / 2**prec:
+                    roots.append(Xj)
+                else:
+                    nextqueue.append(Xj)
+            else:
+                nextqueue.extend(Xs)
+        queue = nextqueue
+    starts = [X.a for X in queue]
+    ends = [X.b for X in queue]
+    return roots
 
 
-p = x**2 - 2
+x = Symbol('x')
+#p = (x-1)*(x-2)*(x-S(3)/2)*(x-4)*(x-7)
+p = (x-1)*(x-2)
 poly = Poly(p, domain=QQ).rep.rep
 polydiff = Poly(p.diff(), domain=QQ).rep.rep
-print(interval_newton_rat(poly, polydiff, [QQ(-2), QQ(2)]))
+roots = interval_newton_rat(poly, polydiff, [QQ(0), QQ(9)])
+print(len(roots), 'roots')
+for r in roots:
+    print(r.n())
 
 
 def evalf_crootof(root, dps=None):
