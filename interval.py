@@ -1,7 +1,7 @@
 from functools import total_ordering
 from sympy import *
 from sympy.core.evalf import dps_to_prec
-from mpmath import workprec, mpf, mp, mpi
+from mpmath import workprec, mpf, mp, mpi, MPIntervalContext
 
 
 def coeffs(polyexpr, x):
@@ -531,15 +531,108 @@ def interval_newton_rat(poly, polydiff, X, prec=53):
     return roots
 
 
+def qq_to_iv(num, iv):
+    """Convert rational QQ to real MPF interval"""
+    return iv.mpf(num.numerator) / iv.mpf(num.denominator)
+
+
+def poly_to_iv(poly, iv):
+    """Convert poly with QQ coefficients to MPF intervals"""
+    return [qq_to_iv(coeff, iv) for coeff in poly]
+
+
+def intersect_iv(X, Y, iv):
+    a = max(X.a, Y.a)
+    b = min(X.b, Y.b)
+    if a <= b:
+        return iv.mpf((a, b))
+    else:
+        return None
+
+
+def is_proper_subset(X, Y):
+    return X.a > Y.a and X.b < Y.b
+
+
+def split_iv(X, iv):
+    return iv.mpf((X.a, X.mid)), iv.mpf((X.mid, X.b))
+
+
+def split_iv_zero(X, iv):
+    assert 0 in X
+    return iv.mpf((X.a, 0)), iv.mpf((0, X.b))
+
+
+def interval_newton(poly, polydiff, X, prec=53):
+    iv = MPIntervalContext()
+    iv.dps = prec + 20
+
+    poly_iv = poly_to_iv(poly, iv)
+    polydiff_iv = poly_to_iv(polydiff, iv)
+    X_iv = iv.mpf(X)
+
+    queue = [X_iv]
+    while queue:
+        if len(queue) == 1:
+            [Xj] = queue
+            a, b = Xj.a, Xj.b
+            if abs(a - b) * 2**(prec+3) < (abs(a) + abs(b)):
+                return Float(Xj.mid, precision=prec)
+
+        nextqueue = []
+
+        for X1 in queue:
+            x1 = X1.mid
+            f = horner(poly_iv, x1)
+            Fp = horner(polydiff_iv, X1)
+
+            if 0 not in Fp:
+                Z2 = x1 - f/Fp
+                X2 = intersect_iv(Z2, X1, iv)
+
+                if X2 is None:
+                    pass # no roots
+                elif is_proper_subset(Z2, X1):
+                    # this interval is the one -> discard all others
+                    nextqueue = [X2]
+                    break
+                elif 4*X2.delta > 3*X1.delta:
+                    # converging -> continue
+                    nextqueue.append(X2)
+                else:
+                    # insufficient progress -> split
+                    nextqueue.extend(split_iv(X2, iv))
+
+            else:
+                # Split at the zero of the denominator
+                Fp1, Fp2 = split_iv_zero(Fp, iv)
+                X21 = intersect_iv(x1 - f/Fp1, X1, iv)
+                X22 = intersect_iv(x1 - f/Fp2, X1, iv)
+                X2s = [Xi for Xi in [X21, X22] if Xi is not None]
+                nextqueue.extend(X2s)
+
+        queue = nextqueue
+
+
+def refine_root(p, a, b, dps=15):
+    poly = Poly(p).rep.rep
+    polydiff = Poly(p.diff()).rep.rep
+    prec = dps_to_prec(dps)
+    return interval_newton(poly, polydiff, (a, b), prec)
+
+
+
 x = Symbol('x')
 #p = (x-1)*(x-2)*(x-S(3)/2)*(x-4)*(x-7)
-p = (x-1)*(x-2)
-poly = Poly(p, domain=QQ).rep.rep
-polydiff = Poly(p.diff(), domain=QQ).rep.rep
-roots = interval_newton_rat(poly, polydiff, [QQ(0), QQ(9)])
-print(len(roots), 'roots')
-for r in roots:
-    print(r.n())
+p = x**2 - 2
+roots = refine_root(p, 0, 1.5)
+#poly = Poly(p, domain=QQ).rep.rep
+#polydiff = Poly(p.diff(), domain=QQ).rep.rep
+#roots = interval_newton(poly, polydiff, [0, 1.5])
+#print(len(roots), 'roots')
+#for r in roots:
+    #print(r.n())
+print(roots)
 
 
 def evalf_crootof(root, dps=None):
