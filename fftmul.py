@@ -1,52 +1,30 @@
-def bitrev(j, K):
-    k = 1
-    while 2**k < K:
-        k += 1
-    return int(bin(j)[2:].rjust(k, '0')[::-1], 2)
-
-
-def forward_fft(A, omega, K, modulo):
-    assert len(A) == K
-    assert 1 == (omega ** K) % modulo < (omega ** (K // 2)) % modulo
-    if K == 2:
-        a0, a1 = A
-        return [(a0 + a1) % modulo, (a0 - a1) % modulo]
-    else:
-        omega2 = omega ** 2
-        K2 = K // 2
-        A2 = [None] * K
-        A2[::2] = forward_fft(A[::2], omega2, K2, modulo)
-        A2[1::2] = forward_fft(A[1::2], omega2, K2, modulo)
-        for j in range(K2):
-            a2j, a2j1 = A2[2*j], A2[2*j+1]
-            omega_a2j1 = omega ** (K-j) * a2j1
-            A2[2*j], A[2*j+1] = (a2j + omega_a2j1) % modulo, (a2j - omega_a2j1) % modulo
-        return A2
-
-
-#def forward_fft(A, omega, K, modulo):
-    #if N = 1
-
 def check(A, omega, K, modulo):
+    """Check that omega, K and modulo are suitable for fft of A"""
     assert len(A) == K
-    assert 1 == (omega ** K) % modulo < (omega ** (K // 2)) % modulo
+    assert K % 2 == 0
+    assert pow(omega, K, modulo) == 1
+    assert pow(omega, K // 2, modulo) == -1 % modulo
 
 
 def fft_slow(A, omega, K, modulo):
+    """Basic quadratic DFT algoritm"""
     check(A, omega, K, modulo)
     return [sum(omega**(i*j)*A[j] for j in range(K)) % modulo for i in range(K)]
 
 
 def ifft_slow(A, omega, K, modulo):
+    """Basic quadratic inverse DFT algoritm"""
     check(A, omega, K, modulo)
     return [sum(omega**((-i*j) % K)*A[j] for j in range(K)) % modulo for i in range(K)]
 
 
 def fft(A, omega, K, modulo):
-    check(A, omega, K, modulo)
+    """Fast N*log(N) DFT algorithm"""
+    #check(A, omega, K, modulo)
     if K == 2:
         a0, a1 = A
-        return [(a0 + a1) % modulo, (a0 - a1) % modulo]
+        #return [(a0 + a1) % modulo, (a0 - a1) % modulo]
+        return [a0 + a1, a0 - a1]
     else:
         omega2 = omega ** 2
         K2 = K // 2
@@ -56,17 +34,20 @@ def fft(A, omega, K, modulo):
         A2 = [None] * K
         for j in range(K2):
             p, q = E[j], omega**j * O[j]
-            A2[j], A2[K2+j] = (p + q) % modulo, (p - q) % modulo
+            #A2[j], A2[K2+j] = (p + q) % modulo, (p - q) % modulo
+            A2[j], A2[K2+j] = (p + q), (p - q)
         return A2
 
 
 def ifft(A, omega, K, modulo):
-    check(A, omega, K, modulo)
-    omegaprime = (omega ** (K-1)) % modulo
-    return fft(A, omegaprime, K, modulo)
+    """Fast N*log(N) inverse DFT algorithm"""
+    #check(A, omega, K, modulo)
+    omegainv = pow(omega, K-1, modulo)
+    return fft(A, omegainv, K, modulo)
 
 
 def bitsplit(A, M, K=None):
+    """Split integer A into K M-bit integers, padding with zeros."""
     As = bin(A)[2:]
     B = len(As)
     num, start = divmod(B, M)
@@ -82,17 +63,38 @@ def bitsplit(A, M, K=None):
 
 
 def bitjoin(Adigits, M):
+    """Inverse of bitsplit"""
     assert all(a.bit_length() <= M for a in Adigits)
     As = ''.join(bin(a)[2:].rjust(M, '0') for a in Adigits[::-1])
     return int(As, 2)
 
 
+#@profile
 def fftmulmod(A, B, n, K, k):
+    """Compute A*B using FFT multiplication.
+
+    The algorithm generally computes A*B mod 2**n + 1 but we require n to be
+    large enough that this is just A*B. Also we require n = M*K and K = 2**k.
+
+    Basic steps:
+    - Split the bits of A and B and pad with zeros so that both are
+      represented by K (=2**k) digits in base 2**M.
+    - Compute n' ~ sqrt(n) so that we can work modulo 2**n' + 1.
+    - Premultiply both digit sequences by theta**j
+    - Fourier transform both digit sequences in Z / <2**n' + 1>
+    - Compute the convolution with pointwise multiplication.
+    - Post divide by K*theta**j (note: ifft(fft(x)) = K*x).
+    - Inverse transform to get digits of C = A*B in base 2**M
+    - Assemble the digits to get C as a single int.
+    """
+    assert A.bit_length() + B.bit_length() < n
     assert 2 ** k == K
     M = n // K
     assert M * K == n
     Adigits = bitsplit(A, M, K)
     Bdigits = bitsplit(B, M, K)
+    assert len(Adigits) == K
+    assert len(Bdigits) == K
 
     bound = (2*n) // K + k
     nprime = bound + K - bound % K
@@ -101,8 +103,6 @@ def fftmulmod(A, B, n, K, k):
     omega = theta ** 2
 
     modulus = 2**nprime + 1
-
-    print(modulus)
 
     for j in range(K):
         Adigits[j] = (theta**j * Adigits[j]) % modulus
@@ -113,56 +113,134 @@ def fftmulmod(A, B, n, K, k):
 
     Cfreq = [None] * K
     for j in range(K):
-        Cfreq[j] = (Afreq[j]*Bfreq[j]) % modulus
+        Cfreq[j] = (Afreq[j]*Bfreq[j])
+        Cfreq[j] %= modulus
 
     Cdigits = ifft(Cfreq, omega, K, modulus)
 
-    print(Adigits)
-    print(Bdigits)
-    print(Cdigits)
-
     for j in range(K):
-        Cdigits[j] = (Cdigits[j] // (K * theta**j)) % modulus
+        Cdigits[j] = (Cdigits[j] * pow(K * theta**j, -1, modulus))
+        Cdigits[j] %= modulus
         if Cdigits[j] >= (j + 1) * 2**(2*M):
             Cdigits[j] = Cdigits[j] - modulus
 
+    # We can't use bitjoin here because the digits are larger than the base.
+    # (the bitstrings overlap). It should be possible to do this more
+    # efficiently than below though by iteratively normalising the digits.
     C = sum(Cdigits[j]*2**(j*M) for j in range(K))
     return C
 
 
+def fftmulmod_mont(A, B, n, K, k):
+    """Compute A*B using FFT multiplication.
 
-#def forward_fft(A, omega, K, modulo):
-#    assert len(A) == K
-#    assert 1 == (omega ** K) % modulo < (omega ** (K // 2)) % modulo
-#    if K == 2:
-#        a0, a1 = A
-#        return [(a0 + a1) % modulo, (a0 - a1) % modulo]
-#    else:
-#        omega2 = opmega**2
+    The algorithm generally computes A*B mod 2**n + 1 but we require n to be
+    large enough that this is just A*B. Also we require n = M*K and K = 2**k.
+
+    Basic steps:
+    - Split the bits of A and B and pad with zeros so that both are
+      represented by K (=2**k) digits in base 2**M.
+    - Compute n' ~ sqrt(n) so that we can work modulo 2**n' + 1.
+    - Premultiply both digit sequences by theta**j
+    - Fourier transform both digit sequences in Z / <2**n' + 1>
+    - Compute the convolution with pointwise multiplication.
+    - Post divide by K*theta**j (note: ifft(fft(x)) = K*x).
+    - Inverse transform to get digits of C = A*B in base 2**M
+    - Assemble the digits to get C as a single int.
+    """
+    assert A.bit_length() + B.bit_length() < n
+    assert 2 ** k == K
+    M = n // K
+    assert M * K == n
+    Adigits = bitsplit(A, M, K)
+    Bdigits = bitsplit(B, M, K)
+    assert len(Adigits) == K
+    assert len(Bdigits) == K
+
+    bound = (2*n) // K + k
+    nprime = bound + K - bound % K
+    assert nprime % K == 0
+    theta = 2 ** (nprime // K)
+    omega = theta ** 2
+
+    to_mont, from_mont, add, multiply = montgomery_gen(nprime)
+
+    modulus = 2**nprime + 1
+
+    Adigits = [to_mont(ai) for ai in Adigits]
+    Bdigits = [to_mont(bi) for bi in Bdigits]
+
+    for j in range(K):
+        Adigits[j] = multiply(to_mont(theta**j), Adigits[j])
+        Bdigits[j] = multiply(to_mont(theta**j), Bdigits[j])
+
+    Adigits = [from_mont(ai) for ai in Adigits]
+    Bdigits = [from_mont(bi) for bi in Bdigits]
+
+    Afreq = fft(Adigits, omega, K, modulus)
+    Bfreq = fft(Bdigits, omega, K, modulus)
+
+    Cfreq = [None] * K
+    for j in range(K):
+        Cfreq[j] = (Afreq[j]*Bfreq[j])
+        Cfreq[j] %= modulus
+
+    Cdigits = ifft(Cfreq, omega, K, modulus)
+
+    for j in range(K):
+        Cdigits[j] = (Cdigits[j] * pow(K * theta**j, -1, modulus))
+        Cdigits[j] %= modulus
+        if Cdigits[j] >= (j + 1) * 2**(2*M):
+            Cdigits[j] = Cdigits[j] - modulus
+
+    # We can't use bitjoin here because the digits are larger than the base.
+    # (the bitstrings overlap). It should be possible to do this more
+    # efficiently than below though by iteratively normalising the digits.
+    C = sum(Cdigits[j]*2**(j*M) for j in range(K))
+    return C
 
 
-def backward_fft(A, omega, K, modulo):
-    assert len(A) == K
-    assert 1 == (omega ** K) % modulo < (omega ** (K // 2)) % modulo
-    if K == 2:
-        a0, a1 = A
-        return [(a0 + a1) % modulo, (a0 - a1) % modulo]
-    else:
-        omega2 = omega ** 2
-        K2 = K // 2
-        A2 = [None] * K
-        A2[:K2] = backward_fft(A[:K2], omega2, K2, modulo)
-        A2[K2:] = backward_fft(A[K2:], omega2, K2, modulo)
-        for j in range(K2):
-            aj, aK2j = A2[j], A2[K2+j]
-            omega_aK2j = omega ** (K-j) * aK2j
-            A2[j], A2[K2+j] = (aj + omega_aK2j) % modulo, (aj - omega_aK2j) % modulo
-        return A2
+def montgomery_gen(n):
+    """Set up a Montgomery form for arithmetic modulo 2**n + 1
+
+    Returns 4 functions:
+    - convert_to: Convert an integer into Montgomery form
+    - convert_from: Convert from Montgomery form back ordinary integer
+    - add: Efficiently add in Montgomery form
+    - multiply: Efficiently mulyiply in Montgomery form
+    """
+    N = 2**n + 1
+    R = 2**n
+    Ninv = 2**n - 1
+
+    def to_mont(e):
+        return (e*R) % N
+
+    def from_mont(e):
+        return multiply(e, 1)
+
+    def add(a, b):
+        c = a + b
+        if c > N:
+            c -= N
+        return c
+
+    def multiply(c, d):
+        x = c*d
+        y = x + N*((x*Ninv) & (R - 1))
+        assert y % R == 0
+        z = y // R
+        if z >= N:
+            z -= N
+        return z
+
+    return to_mont, from_mont, add, multiply
 
 
-def primitive_root(omega, K, modulo):
-    if not (1 == (omega ** K) % modulo < (omega ** (K // 2)) % modulo):
-        return False
-    else:
-        return all(sum(omega**(i*j) for j in range(K)) for i in range(K))
 
+#to_mont, from_mont, add, multiply = montgomery_gen(10)
+
+
+a = int('1'*1000)
+b = fftmulmod_mont(a, a, 2**20, 2**3, 3)
+assert b == a*a
