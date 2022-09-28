@@ -18,13 +18,14 @@ def ifft_slow(A, omega, K, modulo):
     return [sum(omega**((-i*j) % K)*A[j] for j in range(K)) % modulo for i in range(K)]
 
 
+@profile
 def fft(A, omega, K, modulo):
     """Fast N*log(N) DFT algorithm"""
     #check(A, omega, K, modulo)
     if K == 2:
         a0, a1 = A
-        #return [(a0 + a1) % modulo, (a0 - a1) % modulo]
-        return [a0 + a1, a0 - a1]
+        return [(a0 + a1) % modulo, (a0 - a1) % modulo]
+        #return [a0 + a1, a0 - a1]
     else:
         omega2 = omega ** 2
         K2 = K // 2
@@ -34,16 +35,17 @@ def fft(A, omega, K, modulo):
         A2 = [None] * K
         for j in range(K2):
             p, q = E[j], omega**j * O[j]
-            #A2[j], A2[K2+j] = (p + q) % modulo, (p - q) % modulo
-            A2[j], A2[K2+j] = (p + q), (p - q)
+            A2[j], A2[K2+j] = (p + q) % modulo, (p - q) % modulo
+            #A2[j], A2[K2+j] = (p + q), (p - q)
         return A2
 
 
+@profile
 def ifft(A, omega, K, modulo):
     """Fast N*log(N) inverse DFT algorithm"""
     #check(A, omega, K, modulo)
-    #omegainv = pow(omega, K-1, modulo)
-    omegainv = omega**(K-1)
+    omegainv = pow(omega, K-1, modulo)
+    #omegainv = omega**(K-1)
     return fft(A, omegainv, K, modulo)
 
 
@@ -70,7 +72,7 @@ def bitjoin(Adigits, M):
     return int(As, 2)
 
 
-#@profile
+@profile
 def fftmulmod(A, B, n, K, k):
     """Compute A*B using FFT multiplication.
 
@@ -142,8 +144,8 @@ def fft_mont(A, omega, K):
     else:
         omega2 = omega ** 2
         K2 = K // 2
-        E = fft_mont(A[::2], omega2, K2, modulo)
-        O = fft_mont(A[1::2], omega2, K2, modulo)
+        E = fft_mont(A[::2], omega2, K2)
+        O = fft_mont(A[1::2], omega2, K2)
 
         A2 = [None] * K
         for j in range(K2):
@@ -160,6 +162,7 @@ def ifft_mont(A, omega, K):
     return fft_mont(A, omegainv, K)
 
 
+#@profile
 def fftmulmod_mont(A, B, n, K, k):
     """Compute A*B using FFT multiplication.
 
@@ -209,19 +212,24 @@ def fftmulmod_mont(A, B, n, K, k):
     #Adigits = [ai.to_int() for ai in Adigits]
     #Bdigits = [bi.to_int() for bi in Bdigits]
 
-    Afreq = fft(Adigits, omega, K, modulus)
-    Bfreq = fft(Bdigits, omega, K, modulus)
+    Afreq = fft_mont(Adigits, omega, K)
+    Bfreq = fft_mont(Bdigits, omega, K)
 
     Cfreq = [None] * K
     for j in range(K):
         Cfreq[j] = (Afreq[j]*Bfreq[j])
         #Cfreq[j] %= modulus
 
-    Cdigits = ifft(Cfreq, omega, K, modulus)
+    Cdigits = ifft_mont(Cfreq, omega, K)
 
     for j in range(K):
-        Cdigits[j] = (Cdigits[j] * pow(Kmont * theta**j, -1, modulus))
-        Cdigits[j] %= modulus
+        temp1 = Kmont * theta**j
+        temp2 = temp1.to_int()
+        temp2 = pow(temp2, -1, modulus)
+        temp2 = mont.from_int(temp2)
+        result = Cdigits[j] * temp2
+        Cdigits[j] = result.to_int()
+        #Cdigits[j] %= modulus
         if Cdigits[j] >= (j + 1) * 2**(2*M):
             Cdigits[j] = Cdigits[j] - modulus
 
@@ -241,6 +249,7 @@ def montgomery_gen(n):
     - add: Efficiently add in Montgomery form
     - multiply: Efficiently mulyiply in Montgomery form
     """
+    print(n)
     N = 2**n + 1
     R = 2**n
     Ninv = 2**n - 1
@@ -272,7 +281,7 @@ def montgomery_gen(n):
             z -= N
         return z
 
-    def pow(a, n):
+    def pow(x, n):
         if n == 0:
             return R
         elif n % 2 == 0:
@@ -315,7 +324,8 @@ def montgomery_gen(n):
 #to_mont, from_mont, add, multiply = montgomery_gen(10)
 
 
-a = int('1'*100000)
+a = int('1'*1000)
 b = fftmulmod(a, a, 2**20, 2**3, 3)
 #b = fftmulmod_mont(a, a, 2**20, 2**3, 3)
+#b = fftmulmod_mont(a, a, 2**16, 2**5, 5)
 assert b == a*a
