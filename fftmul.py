@@ -42,7 +42,8 @@ def fft(A, omega, K, modulo):
 def ifft(A, omega, K, modulo):
     """Fast N*log(N) inverse DFT algorithm"""
     #check(A, omega, K, modulo)
-    omegainv = pow(omega, K-1, modulo)
+    #omegainv = pow(omega, K-1, modulo)
+    omegainv = omega**(K-1)
     return fft(A, omegainv, K, modulo)
 
 
@@ -131,6 +132,34 @@ def fftmulmod(A, B, n, K, k):
     return C
 
 
+def fft_mont(A, omega, K):
+    """Fast N*log(N) DFT algorithm"""
+    #check(A, omega, K, modulo)
+    if K == 2:
+        a0, a1 = A
+        #return [(a0 + a1) % modulo, (a0 - a1) % modulo]
+        return [a0 + a1, a0 - a1]
+    else:
+        omega2 = omega ** 2
+        K2 = K // 2
+        E = fft_mont(A[::2], omega2, K2, modulo)
+        O = fft_mont(A[1::2], omega2, K2, modulo)
+
+        A2 = [None] * K
+        for j in range(K2):
+            p, q = E[j], omega**j * O[j]
+            #A2[j], A2[K2+j] = (p + q) % modulo, (p - q) % modulo
+            A2[j], A2[K2+j] = (p + q), (p - q)
+        return A2
+
+
+def ifft_mont(A, omega, K):
+    """Fast N*log(N) inverse DFT algorithm"""
+    #check(A, omega, K, modulo)
+    omegainv = pow(omega, K-1)
+    return fft_mont(A, omegainv, K)
+
+
 def fftmulmod_mont(A, B, n, K, k):
     """Compute A*B using FFT multiplication.
 
@@ -163,19 +192,22 @@ def fftmulmod_mont(A, B, n, K, k):
     theta = 2 ** (nprime // K)
     omega = theta ** 2
 
-    to_mont, from_mont, add, multiply = montgomery_gen(nprime)
+    mont = montgomery_gen(nprime)
 
     modulus = 2**nprime + 1
 
-    Adigits = [to_mont(ai) for ai in Adigits]
-    Bdigits = [to_mont(bi) for bi in Bdigits]
+    theta = mont.from_int(theta)
+    omega = mont.from_int(omega)
+    Kmont = mont.from_int(K)
+    Adigits = [mont.from_int(ai) for ai in Adigits]
+    Bdigits = [mont.from_int(bi) for bi in Bdigits]
 
     for j in range(K):
-        Adigits[j] = multiply(to_mont(theta**j), Adigits[j])
-        Bdigits[j] = multiply(to_mont(theta**j), Bdigits[j])
+        Adigits[j] = theta**j * Adigits[j]
+        Bdigits[j] = theta**j * Bdigits[j]
 
-    Adigits = [from_mont(ai) for ai in Adigits]
-    Bdigits = [from_mont(bi) for bi in Bdigits]
+    #Adigits = [ai.to_int() for ai in Adigits]
+    #Bdigits = [bi.to_int() for bi in Bdigits]
 
     Afreq = fft(Adigits, omega, K, modulus)
     Bfreq = fft(Bdigits, omega, K, modulus)
@@ -183,12 +215,12 @@ def fftmulmod_mont(A, B, n, K, k):
     Cfreq = [None] * K
     for j in range(K):
         Cfreq[j] = (Afreq[j]*Bfreq[j])
-        Cfreq[j] %= modulus
+        #Cfreq[j] %= modulus
 
     Cdigits = ifft(Cfreq, omega, K, modulus)
 
     for j in range(K):
-        Cdigits[j] = (Cdigits[j] * pow(K * theta**j, -1, modulus))
+        Cdigits[j] = (Cdigits[j] * pow(Kmont * theta**j, -1, modulus))
         Cdigits[j] %= modulus
         if Cdigits[j] >= (j + 1) * 2**(2*M):
             Cdigits[j] = Cdigits[j] - modulus
@@ -225,22 +257,65 @@ def montgomery_gen(n):
             c -= N
         return c
 
-    def multiply(c, d):
+    def sub(a, b):
+        c = a - b
+        if c < 0:
+            c += N
+        return c
+
+    def mul(c, d):
         x = c*d
         y = x + N*((x*Ninv) & (R - 1))
-        assert y % R == 0
+        #assert y % R == 0
         z = y // R
         if z >= N:
             z -= N
         return z
 
-    return to_mont, from_mont, add, multiply
+    def pow(a, n):
+        if n == 0:
+            return R
+        elif n % 2 == 0:
+            return pow(x * x, n // 2)
+        else:
+            return x * pow(x * x, (n - 1) // 2)
+
+
+    class MontgomeryForm:
+        def __init__(self, value):
+            self.value = value
+
+        @classmethod
+        def from_int(cls, integer):
+            return cls((integer*R) % N)
+
+        def to_int(self):
+            return mul(self.value, 1)
+
+        def __add__(self, other):
+            assert isinstance(other, MontgomeryForm)
+            return MontgomeryForm(add(self.value, other.value))
+
+        def __sub__(self, other):
+            assert isinstance(other, MontgomeryForm)
+            return MontgomeryForm(sub(self.value, other.value))
+
+        def __mul__(self, other):
+            assert isinstance(other, MontgomeryForm)
+            return MontgomeryForm(mul(self.value, other.value))
+
+        def __pow__(self, other):
+            assert isinstance(other, int) and other >= 0
+            return MontgomeryForm(pow(self.value, other))
+
+    return MontgomeryForm
 
 
 
 #to_mont, from_mont, add, multiply = montgomery_gen(10)
 
 
-a = int('1'*1000)
-b = fftmulmod_mont(a, a, 2**20, 2**3, 3)
+a = int('1'*100000)
+b = fftmulmod(a, a, 2**20, 2**3, 3)
+#b = fftmulmod_mont(a, a, 2**20, 2**3, 3)
 assert b == a*a
