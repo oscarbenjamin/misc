@@ -18,7 +18,7 @@ def ifft_slow(A, omega, K, modulo):
     return [sum(omega**((-i*j) % K)*A[j] for j in range(K)) % modulo for i in range(K)]
 
 
-@profile
+#@profile
 def fft(A, omega, K, modulo):
     """Fast N*log(N) DFT algorithm"""
     #check(A, omega, K, modulo)
@@ -40,7 +40,7 @@ def fft(A, omega, K, modulo):
         return A2
 
 
-@profile
+#@profile
 def ifft(A, omega, K, modulo):
     """Fast N*log(N) inverse DFT algorithm"""
     #check(A, omega, K, modulo)
@@ -72,7 +72,7 @@ def bitjoin(Adigits, M):
     return int(As, 2)
 
 
-@profile
+#@profile
 def fftmulmod(A, B, n, K, k):
     """Compute A*B using FFT multiplication.
 
